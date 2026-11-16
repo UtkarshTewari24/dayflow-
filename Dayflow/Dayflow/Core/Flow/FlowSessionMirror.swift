@@ -47,6 +47,9 @@ final class FlowSessionMirror: ObservableObject {
   @Published private(set) var isDistracted = false
 
   weak var webBridge: FlowBridgeForwarding?
+  /// Who gets session events: the hosted page if one is attached, otherwise
+  /// the local store, which owns Flow's data in this build.
+  private var bridge: FlowBridgeForwarding { webBridge ?? FlowLocalSessionStore.shared }
 
   private var deadlineTimer: Timer?
   private var toastTimer: Timer?
@@ -138,7 +141,7 @@ final class FlowSessionMirror: ObservableObject {
   /// The reply pill under the demo bubble. The page decides what comes next
   /// (the feisty beat, or hiding the creature), so the overlay stays up.
   func replyToDemo() {
-    webBridge?.sendEvent("onboardingAlertReply", payload: [:])
+    bridge.sendEvent("onboardingAlertReply", payload: [:])
   }
 
   // MARK: - Distraction simulation (⌘⇧D fallback for testing)
@@ -179,7 +182,7 @@ final class FlowSessionMirror: ObservableObject {
       "flow_distraction_simulated", ["alert_style": snapshot.alertStyle.rawValue])
     isDistracted = true
     // Let the web UI record a distraction_started event with the backend.
-    webBridge?.sendEvent("distractionSimulated", payload: [:])
+    bridge.sendEvent("distractionSimulated", payload: [:])
     guard snapshot.alertStyle != .quiet else { return }
     snoozeUntil = nil
     nudgeStreak += 1
@@ -197,7 +200,7 @@ final class FlowSessionMirror: ObservableObject {
     guard snapshot.phase == .active else { return }
     isDistracted = distracted
     if !distracted { nudgeStreak = 0 }
-    webBridge?.sendEvent(distracted ? "distractionSimulated" : "distractionEnded", payload: [:])
+    bridge.sendEvent(distracted ? "distractionSimulated" : "distractionEnded", payload: [:])
     if !distracted, case .nudge = overlay {
       overlay = .hidden
     }
@@ -218,7 +221,7 @@ final class FlowSessionMirror: ObservableObject {
   /// (completed by Flow), and the creature celebrates unless it's quiet mode.
   func agentCompletedGoals(_ goals: [FlowGoalTask]) {
     guard snapshot.phase == .active, !goals.isEmpty else { return }
-    webBridge?.sendEvent("tasksCompleted", payload: ["ids": goals.map(\.id)])
+    bridge.sendEvent("tasksCompleted", payload: ["ids": goals.map(\.id)])
     AnalyticsService.shared.capture("flow_agent_goal_completed", ["count": goals.count])
     guard snapshot.alertStyle != .quiet else { return }
     if case .nudge = overlay { return }
@@ -244,7 +247,7 @@ final class FlowSessionMirror: ObservableObject {
     isDistracted = false
     snoozeUntil = nil
     nudgeStreak = 0
-    webBridge?.sendEvent("overlayAction", payload: ["action": "backToWork"])
+    bridge.sendEvent("overlayAction", payload: ["action": "backToWork"])
     FlowDistractionAgent.shared.noteUserEvent(
       "The user tapped \"I'll get back to work\" on your nudge.", markRefocused: true)
     showToast(String(localized: "Nice! Keep at it"))
@@ -253,7 +256,7 @@ final class FlowSessionMirror: ObservableObject {
   func snooze(minutes: Int) {
     lastNudgeReply = .snooze
     snoozeUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
-    webBridge?.sendEvent(
+    bridge.sendEvent(
       "overlayAction", payload: ["action": "snooze", "minutes": minutes])
     FlowDistractionAgent.shared.noteUserEvent(
       "The user snoozed your nudge for \(minutes) minutes. Do not nudge again until the snooze is over unless they switch to something new."
@@ -269,7 +272,7 @@ final class FlowSessionMirror: ObservableObject {
     isDistracted = false
     snoozeUntil = nil
     nudgeStreak = 0
-    webBridge?.sendEvent("distractionEnded", payload: [:])
+    bridge.sendEvent("distractionEnded", payload: [:])
     FlowDistractionAgent.shared.noteUserEvent(
       "The user says your nudge was a mistake — they were on task. Trust them, and be more lenient about screens like the one that triggered it.",
       markRefocused: true)
@@ -300,11 +303,7 @@ final class FlowSessionMirror: ObservableObject {
   /// "Start session").
   func requestStartSession() {
     openFlowTab()
-    if let webBridge {
-      webBridge.sendEvent("sessionControl", payload: ["action": "start"])
-    } else {
-      pendingStartSession = true
-    }
+    bridge.sendEvent("sessionControl", payload: ["action": "start"])
   }
 
   /// A session is running or on a break: the menu bar shows its Flow pill
@@ -319,11 +318,7 @@ final class FlowSessionMirror: ObservableObject {
     var payload: [String: Any] = ["action": action]
     if let minutes { payload["minutes"] = minutes }
     AnalyticsService.shared.capture("flow_menu_bar_control", payload)
-    guard let webBridge else {
-      openFlowTab()
-      return
-    }
-    webBridge.sendEvent("sessionControl", payload: payload)
+    bridge.sendEvent("sessionControl", payload: payload)
   }
 
   // MARK: - Deadlines
